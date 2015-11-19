@@ -1,0 +1,12 @@
+The code is broken out into subdirectories as follows:
+
+common      -  Independant functions and objects used by the different block
+               calculation mechanisms
+
+calc_blocks -  Different functions for calculating a block of primes
+
+prime       -  This coordinates the calculating of blocks in order to generate
+               primes over the given range, including coordinating the
+               initialisation and the adding of new sieving primes
+
+prog        -  The various compilable programs

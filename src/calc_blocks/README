@@ -1,0 +1,10 @@
+Different methods of marking off primes in an 8/30 wheel
+
+Note:
+  - Each method must follow the layout specified in plans.h
+  - Each method needs to be registered in plan_register.h. Declare it
+    using the macro:
+        DECLARE_PLAN_ENTRY_FUNCTIONS(method_name)
+  - A method becomes a part of a plan which is store in the plans[] array
+    in plan_register.h. Use the method in a plan using:
+        USE_PLAN_ENTRY_FUNCTIONS(method_name)
