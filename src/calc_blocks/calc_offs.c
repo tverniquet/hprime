@@ -247,10 +247,6 @@ get_offs_a(struct calc_offs_ctx *ctx __attribute__((unused)), FV *ap, FV *pp, FV
    }
 
 
-   /*
-    * The idea is that each section can be inlined in a new version of this
-    * function.
-    */
    switch(bit) {
       case 0: {
          v_offsets_0 = *op + a_bytes;
@@ -400,8 +396,8 @@ mark_16_a (struct prime_current_block *pcb, uint16_t *offs_orig, uint16_t *prime
 /*
  * using ((always_inline)) OR ((no_inline)) seems to causes it to slow down
  *
- * I think that the switch inside of get_offs_a is promoted outside of the --k loop.
- *
+ * I'm not entirely sure what gcc does here but it seems to be a sizeable boost
+ * (over explicitely inlining or not inlining)
  */
 static void
 do_bit_a(struct calc_offs_ctx *ctx, struct prime_current_block *pcb, struct prime_offs *po, int skip, const int bit)
