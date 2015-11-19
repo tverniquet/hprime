@@ -97,31 +97,19 @@ DECLARE_PLAN_ENTRY_FUNCTIONS(simple);
 
 
 /**
- * @file Shuffle implementation for lower primes
+ * simple_middle - Small advancement on the general 'simple' plan
  *
- * This attempts to force the use of the shuffle command to mark off blocks
- * of primes.
+ * This only works for primes that are < block_size, and to a maximum of 2^16.
  *
- * The general approach is to mark off a few 8-byte ints at a time and then
- * shuffle the bytes around according to the repeat pattern of the prime.
+ * The main optimisations from the 'simple' plan are:
+ *  - calculates all 8 'b_bits' for a given prime at the same time
+ *  - store the offset for these primes between blocks to save re-calculating
+ *    each time
  *
- * This method only really makes sense for the lower primes. A limit has been
- * set of primes to 64. That is, prime 61 should have 8 bits to mark off within
- * a single cache_line, or around 1 bit per 8-byte-int. For larger primes some
- * 8-byte ints will be skipped meaning there quickly becomes more efficient
- * ways of marking off the primes.
+ * NOTE: this requires a fair bit of space (20 bytes per prime)
  */
 
-DECLARE_PLAN_ENTRY_FUNCTIONS(shuffle);
-
-
-/**
- * @file Shuffle2 implementation for lower primes
- *
- * Same as shuffle above but using ymm registers
- */
-
-DECLARE_PLAN_ENTRY_FUNCTIONS(shuffle2);
+DECLARE_PLAN_ENTRY_FUNCTIONS(simple_middle);
 
 
 /**
@@ -139,23 +127,6 @@ DECLARE_PLAN_ENTRY_FUNCTIONS(shuffle2);
  */
 
 DECLARE_PLAN_ENTRY_FUNCTIONS(load_unaligned);
-
-
-/**
- * simple_middle - Small advancement on the general 'simple' plan
- *
- * This only works for primes that are < block_size, and to a maximum of 2^16.
- *
- * The main optimisations from the 'simple' plan are:
- *  - calculates all 8 'b_bits' for a given prime at the same time
- *  - store the offset for these primes between blocks to save re-calculating
- *    each time
- *
- * NOTE: this requires a fair bit of space (20 bytes per prime)
- */
-
-DECLARE_PLAN_ENTRY_FUNCTIONS(simple_middle);
-
 
 /**
  * read_offs - Optimisation on the simple_middle plan
@@ -178,91 +149,29 @@ DECLARE_PLAN_ENTRY_FUNCTIONS(simple_middle);
 
 DECLARE_PLAN_ENTRY_FUNCTIONS(read_offs);
 
-/**
- * calc_offs - Another attempt to calculate the offsets
- */
-
-DECLARE_PLAN_ENTRY_FUNCTIONS(calc_offsv2);
 
 /**
- * calc_offs - Another attempt to calculate the offsets
+ * calc_offs - Calculate the offsets
+ *
+ * This only works for primes that are < block_size, and to a maximum of 2^15.
+ *
+ * It calculates the 8 relative offsets for 16 primes at a time in ymm
+ * registers.
+ *
+ * Only a single 16bit int per id is stored each time.
  */
 
 DECLARE_PLAN_ENTRY_FUNCTIONS(calc_offs);
 
 
 /**
- * lu_calc_offs - Another attempt to calculate the offsets
+ * lu_calc_offs - Calculate the offsets
+ *
+ * This only works for primes that are > 2^15. It is not optimal
+ * once no bits are set in any one 32*1024 block.
  */
 
 DECLARE_PLAN_ENTRY_FUNCTIONS(lu_calc_offs);
-
-
-/**
- * lower_middle - remodel for primes 64-128
- */
-
-DECLARE_PLAN_ENTRY_FUNCTIONS(lower_middle);
-
-
-/**
- * skip_a - Another small advancement on the general 'simple' plan
- *
- * The idea is to compute primes in order of a_bit just in case this
- * introduces any improvement.
- *
- * This was not found to introduce any benefit in the middle primes
- *
- */
-
-DECLARE_PLAN_ENTRY_FUNCTIONS(skip_a);
-
-
-/**
- * lower_upper - Attempting to grow the 'simple_middle' plan to primes > 2^16
- *
- * This only works for primes that are > block_size as it assumes there is a
- * maximum of one bit to mark per block.
- *
- * This uses a lot of storage: 4 bytes for the prime and 8*4=32 bytes for the
- * offsets.
- *
- * It also isn't optimal as the primes get larger as more blocks will be
- * skipped meaning that the prime/offsets will be checked without actually
- * marking off a bit.
- */
-
-DECLARE_PLAN_ENTRY_FUNCTIONS(lower_upper);
-
-
-/**
- * lu_read_offs
- *
- * Attempt to promote the read_offs plan to primes > 2^15
- *
- * The main change is:
- *  - need to keep offsets as 32bit instead of 16 bit
- *    (can pack them but there is a cost to unpack them)
- *  - the same offset is used for multiple blocks
- *
- */
-
-DECLARE_PLAN_ENTRY_FUNCTIONS(lu_read_offs);
-
-
-/**
- * lu_skip_a
- *
- * The idea is to compute primes in order of a_bit just in case this
- * introduces any improvement.
- *
- * Trying this for the lower upper primes
- *
- * This was not found to introduce any benefit in the middle primes
- *
- */
-
-DECLARE_PLAN_ENTRY_FUNCTIONS(lu_skip_a);
 
 
 /**
