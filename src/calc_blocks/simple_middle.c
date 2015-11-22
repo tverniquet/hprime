@@ -13,21 +13,31 @@ struct prime_and_n
    uint16_t n;
 }__attribute__((__packed__));
 
+
+struct simple_middle_thread_ctx
+{
+   uint16_t *offsets;
+   int      calculated_index;
+   int      last_blockno;
+};
+
+
 struct simple_middle_ctx
 {
    uint32_t start_prime;
    uint32_t end_prime;
    uint32_t block_size;
-   struct prime_and_n *primelist;
-   uint16_t *offsets;
-   uint32_t primelist_count;
-   uint32_t calculated_index;
+   int      nthreads;
+   int      primelist_count;
+   struct prime_and_n              *primelist;
+   struct simple_middle_thread_ctx *thread_data;
 };
 
 
 int
 simple_middle_init(struct prime_ctx *pctx, uint32_t start_prime, uint32_t end_prime, void **ctx)
 {
+   int i;
    struct simple_middle_ctx *sctx = malloc(sizeof (struct simple_middle_ctx));
    *ctx = sctx;
 
@@ -36,12 +46,18 @@ simple_middle_init(struct prime_ctx *pctx, uint32_t start_prime, uint32_t end_pr
 
    assert(sctx->end_prime < UINT16_MAX);
 
-   sctx->block_size = pctx->threads[0].current_block.block_size;
+   sctx->nthreads = pctx->num_threads ?: 1;
+   sctx->block_size = pctx->current_block->block_size;
+   sctx->thread_data = malloc(sctx->nthreads * sizeof(struct simple_middle_thread_ctx));
 
    sctx->primelist = malloc(sizeof(struct prime_and_n) * (sctx->end_prime - start_prime) / 4 + 1000);
-   sctx->offsets = malloc(sizeof(uint16_t ) * 8 * (sctx->end_prime - start_prime) / 4 + 1000);
    sctx->primelist_count = 0;
-   sctx->calculated_index = 0;
+
+   for (i = 0; i < sctx->nthreads; i++) {
+      sctx->thread_data[i].offsets = malloc(sizeof(uint16_t ) * 8 * (sctx->end_prime - start_prime) / 4 + 1000);
+      sctx->thread_data[i].calculated_index = 0;
+      sctx->thread_data[i].last_blockno = INT32_MAX;
+   }
    return 0;
 }
 
@@ -49,9 +65,14 @@ simple_middle_init(struct prime_ctx *pctx, uint32_t start_prime, uint32_t end_pr
 int
 simple_middle_free(void *ctx)
 {
+   int i;
    struct simple_middle_ctx *sctx = ctx;
+
+   for(i = 0; i < sctx->nthreads; i++)
+      FREE(sctx->thread_data[i].offsets);
+
    FREE(sctx->primelist);
-   FREE(sctx->offsets);
+   FREE(sctx->thread_data);
    FREE(ctx);
    return 0;
 }
@@ -83,7 +104,7 @@ simple_middle_skip_to(struct prime_thread_ctx *pctx, uint64_t target_num, void *
 
    struct simple_middle_ctx *sctx = ctx;
    /* Recalculate all of the offsets depending on the new block */
-   sctx->calculated_index = 0;
+   sctx->thread_data[pctx->thread_index].calculated_index = 0;
    return 0;
 }
 
@@ -122,7 +143,7 @@ compute_block_first_time(struct prime_current_block *pcb, uint32_t sieve_prime, 
 
 
 static void
-check_new_sieve_primes(struct simple_middle_ctx *sctx, struct prime_current_block *pcb)
+check_new_sieve_primes(struct simple_middle_ctx *sctx, struct simple_middle_thread_ctx *tdata, struct prime_current_block *pcb)
 {
    int bit;
    uint32_t sieve_prime;
@@ -131,9 +152,9 @@ check_new_sieve_primes(struct simple_middle_ctx *sctx, struct prime_current_bloc
 
    uint64_t block_start_byte = num_to_bytes(pcb->block_start_num);
 
-   for ( ; sctx->calculated_index < sctx->primelist_count; sctx->calculated_index++) {
+   for ( ; tdata->calculated_index < sctx->primelist_count; tdata->calculated_index++) {
 
-      sieve_prime = sctx->primelist[sctx->calculated_index].prime;
+      sieve_prime = sctx->primelist[tdata->calculated_index].prime;
 
       if (sieve_prime > pcb->sqrt_end_num)
          return;
@@ -148,9 +169,9 @@ check_new_sieve_primes(struct simple_middle_ctx *sctx, struct prime_current_bloc
          while (multiplier_byte - block_start_byte >= UINT16_MAX)
             multiplier_byte -= sieve_prime;
 
-         sctx->offsets[8*sctx->calculated_index + bit] = multiplier_byte - block_start_byte;
+         tdata->offsets[8*tdata->calculated_index + bit] = multiplier_byte - block_start_byte;
       }
-      compute_block_first_time(pcb, sctx->primelist[sctx->calculated_index].prime, &sctx->offsets[sctx->calculated_index*8]);
+      compute_block_first_time(pcb, sctx->primelist[tdata->calculated_index].prime, &tdata->offsets[tdata->calculated_index*8]);
    }
 }
 
@@ -188,9 +209,13 @@ compute_block(struct prime_current_block *pcb, uint32_t sieve_prime, uint16_t *o
 int
 simple_middle_calc_primes(struct prime_thread_ctx *ptx, void *ctx)
 {
-   struct simple_middle_ctx *sctx = ctx;
+   struct simple_middle_ctx        *sctx = ctx;
+   struct simple_middle_thread_ctx *tdata = &sctx->thread_data[ptx->thread_index];
    /* Mark off multiples of 'a' in the block */
-   uint32_t i;
+   int  i;
+   int  skip =  ptx->current_block.block_num - tdata->last_blockno;
+
+   tdata->last_blockno = ptx->current_block.block_num;
 
    if (sctx->primelist_count == 0)
       return 0;
@@ -198,10 +223,15 @@ simple_middle_calc_primes(struct prime_thread_ctx *ptx, void *ctx)
    if (sctx->primelist[0].prime == 7)
       memset(ptx->current_block.block, 0, ptx->current_block.block_size);
 
-   for (i = 0; i < sctx->calculated_index; i++)
-      compute_block(&ptx->current_block, sctx->primelist[i].prime, &sctx->offsets[i*8], sctx->primelist[i].n);
+   if (skip < 0 || skip > 1) {
+      tdata->calculated_index = 0;
+      skip = 0;
+   }
 
-   check_new_sieve_primes(sctx, &ptx->current_block);
+   for (i = 0; i < tdata->calculated_index; i++)
+      compute_block(&ptx->current_block, sctx->primelist[i].prime, &tdata->offsets[i*8], sctx->primelist[i].n);
+
+   check_new_sieve_primes(sctx, tdata, &ptx->current_block);
 
    return 0;
 }
