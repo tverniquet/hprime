@@ -29,7 +29,7 @@ struct read_offs_ctx
 int
 read_offs_init(struct prime_ctx *pctx, uint32_t start_prime, uint32_t end_prime, void **ctx)
 {
-   struct read_offs_ctx *sctx = malloc(sizeof (struct read_offs_ctx));
+   struct read_offs_ctx *sctx = calloc(1, sizeof (struct read_offs_ctx));
    *ctx = sctx;
 
    sctx->start_prime = start_prime;
@@ -251,6 +251,15 @@ compute_block_low(struct prime_current_block *pcb, struct prime_and_offset *po, 
 
    offset = po->offset - sieve_prime;
 
+   /*
+    * po->offset is relative to the start of the block. It is positive but
+    * smaller than sieve_prime, meaning offset = po->offset - sieve_prime is
+    * not positive.
+    *
+    * If (offset + offsets[i]) is still negative then sieve_prime is added
+    * which will make it positive. The idea with the masking was to avoid
+    * branching (and the >>31 produces the mask for -ve numbers).
+    */
    for (i = 0; i < 8; i++) {
       bms[i] = (char *)pcb->block + (offsets[i] + offset) + ((int32_t)(offsets[i] + offset)>>31 & sieve_prime);
       *bms[i] |= bits[i];
