@@ -79,10 +79,13 @@ lu_calc_offs_free(void *ctx)
    struct lu_calc_offs_ctx *sctx = ctx;
    int i;
    int k;
-   for (k = 0; k < sctx->nthreads; k++)
+   for (k = 0; k < sctx->nthreads; k++) {
       for (i = 0; i < 8; i++)
          FREE(sctx->plist[k][i].primes);
-   /* TODO: more freeing */
+      FREE(sctx->plist[k]);
+   }
+
+   FREE(sctx->plist);
    FREE(ctx);
    return 0;
 }
