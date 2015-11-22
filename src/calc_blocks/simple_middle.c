@@ -76,8 +76,11 @@ simple_middle_add_sieving_primes(uint32_t *primelist, uint32_t *ind, uint32_t si
 
 
 int
-simple_middle_skip_to(struct prime_thread_ctx *__attribute__((unused))pctx, uint64_t __attribute__((unused))target_num, void *__attribute__((unused))ctx)
+simple_middle_skip_to(struct prime_thread_ctx *pctx, uint64_t target_num, void *ctx)
 {
+   (void)pctx;
+   (void)target_num;
+
    struct simple_middle_ctx *sctx = ctx;
    /* Recalculate all of the offsets depending on the new block */
    sctx->calculated_index = 0;
