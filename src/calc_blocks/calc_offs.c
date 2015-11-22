@@ -141,8 +141,10 @@ calc_offs_add_sieving_primes(uint32_t *primelist, uint32_t *ind, uint32_t size, 
 
 
 int
-calc_offs_skip_to(struct prime_thread_ctx *pctx, uint64_t __attribute__((unused))target_num, void *__attribute__((unused))ctx)
+calc_offs_skip_to(struct prime_thread_ctx *pctx, uint64_t target_num, void *ctx)
 {
+   (void) target_num;
+
    struct calc_offs_ctx *sctx = ctx;
    /* Recalculate all of the offsets depending on the new block */
    int i;
