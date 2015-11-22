@@ -18,7 +18,7 @@ DEBUG_PROG_MAIN = src/prog/test.c
 
 LDFLAGS = -lm -lrt -lpthread
 CC  = gcc-5
-CFLAGS = -D_ISOC11_SOURCE -Wall $(foreach var, $(HEADERDIRS), -I $(var))
+CFLAGS = -D_ISOC11_SOURCE -Wall -Wextra $(foreach var, $(HEADERDIRS), -I $(var))
 OPTIMISE =  -O3 -march=native
 OPTIMISE_DEBUG =  -march=native
 

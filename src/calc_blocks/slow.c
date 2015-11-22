@@ -56,8 +56,12 @@ slow_add_sieving_primes(uint32_t *primelist, uint32_t *ind, uint32_t size, void 
 
 
 int
-slow_skip_to(struct prime_thread_ctx *__attribute__((unused))pctx, uint64_t __attribute__((unused))target_num, void *__attribute__((unused))ctx)
+slow_skip_to(struct prime_thread_ctx *pctx, uint64_t target_num, void *ctx)
 {
+   (void)pctx;
+   (void)target_num;
+   (void)ctx;
+
    return 0;
 }
 
