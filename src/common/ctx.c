@@ -25,7 +25,7 @@ set_run_info(struct prime_run_info *rinfo, uint64_t start, uint64_t end, uint64_
 static void
 set_initial_block(struct prime_current_block *cb, uint32_t block_size)
 {
-   cb->block = aligned_alloc(32*1024, CEIL_TO(block_size + 64*1024 , 1024)) + 32*1024;
+   cb->block = (char*)aligned_alloc(32*1024, CEIL_TO(block_size + 64*1024 , 1024)) + 32*1024;
    cb->block_size = block_size;
    cb->block_start_num = 0;
    cb->block_end_num = bytes_to_num(block_size);
