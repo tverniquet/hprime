@@ -144,7 +144,7 @@ getprimecount (int plan_index, uint64_t start, uint64_t end, uint64_t *count, in
  * Debug mode - compare the times and results of the two prime plans
  */
 int
-getprimecount_cmp_plan (uint64_t start, uint64_t end, uint64_t *count, int ind1, int ind2)
+getprimecount_cmp_plan (uint64_t start, uint64_t end, uint64_t *count, int ind1, int ind2, int nthreads)
 {
    const struct prime_plan *pp_1 = get_prime_plan(ind1);
    const struct prime_plan *pp_2 = get_prime_plan(ind2);
@@ -152,8 +152,8 @@ getprimecount_cmp_plan (uint64_t start, uint64_t end, uint64_t *count, int ind1,
    int i;
    struct prime_ctx ctx_1, ctx_2;
 
-   init_context(&ctx_1, start, end, 0, pp_1);
-   init_context(&ctx_2, start, end, 0, pp_2);
+   init_context(&ctx_1, start, end, nthreads, pp_1);
+   init_context(&ctx_2, start, end, nthreads, pp_2);
 
    /* Can't compare unless block_size is the same */
    assert(ctx_1.run_info.num_blocks == ctx_2.run_info.num_blocks);
