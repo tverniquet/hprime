@@ -603,6 +603,8 @@ calc_blocks (struct prime_ctx *ctx, int (*fn)(struct prime_thread_ctx *, void *)
       pthread_join(ctx->threads[i].hdl, NULL);
    }
 
+   free(trfn);
+
    return 0;
 }
 
