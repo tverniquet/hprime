@@ -139,8 +139,10 @@ get_next_block (struct prime_thread_ctx *ptx, struct prime_current_block *pcb)
 {
    struct prime_ctx *pm = ptx->main;
 
-   if (ptx->run_num--)
-      return get_next_block_single(pcb);
+   if (ptx->run_num--) {
+      get_next_block_single(pcb);
+      return;
+   }
 
    ptx->run_num = pm->blocks_per_run - 1;
 
