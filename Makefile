@@ -44,7 +44,7 @@ run:
 	bin/$(TARGET) 0 10000000000
 
 # Test the newest plan against the previous (working) plan
-test:
+test: bin/$(TARGET_DEBUG)
 	bin/$(TARGET_DEBUG) 0 1000000000 1 0
 
 clean:
