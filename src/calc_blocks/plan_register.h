@@ -202,14 +202,14 @@ const struct prime_plan plans[] = {
       "read offset to 10^15", 32*1024, 4,
          {{"unaligned",     1,          0,          96,  USE_PLAN_ENTRY_FUNCTIONS(load_unaligned)},
           {"read_offs",     1,         96,     (1<<15),  USE_PLAN_ENTRY_FUNCTIONS(read_offs)},
-          {"simple_middle", 1,    (1<<15),  (1<<16)-30,  USE_PLAN_ENTRY_FUNCTIONS(simple_middle)},
-          {"simple_sieve",  1, (1<<16)-30,  UINT32_MAX,  USE_PLAN_ENTRY_FUNCTIONS(simple)}}
+          {"simple_middle", 1,    (1<<15),     (1<<16),  USE_PLAN_ENTRY_FUNCTIONS(simple_middle)},
+          {"simple_sieve",  1,    (1<<16),  UINT32_MAX,  USE_PLAN_ENTRY_FUNCTIONS(simple)}}
    },
    {
       "simple middle", 32*1024, 3,
          {{"unaligned",     1,          0,          96,  USE_PLAN_ENTRY_FUNCTIONS(load_unaligned)},
-          {"simple_middle", 1,         96,  (1<<16)-30,  USE_PLAN_ENTRY_FUNCTIONS(simple_middle)},
-          {"simple_sieve",  1,     400000,  UINT32_MAX,  USE_PLAN_ENTRY_FUNCTIONS(simple)}}
+          {"simple_middle", 1,         96,     (1<<16),  USE_PLAN_ENTRY_FUNCTIONS(simple_middle)},
+          {"simple_sieve",  1,    (1<<16),  UINT32_MAX,  USE_PLAN_ENTRY_FUNCTIONS(simple)}}
    },
    {
       "load unaligned", 32*1024, 2,

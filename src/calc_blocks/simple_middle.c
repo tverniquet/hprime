@@ -34,7 +34,7 @@ simple_middle_init(struct prime_ctx *pctx, uint32_t start_prime, uint32_t end_pr
    sctx->start_prime = start_prime;
    sctx->end_prime = MIN(pctx->run_info.max_sieve_prime, end_prime);
 
-   assert(sctx->end_prime < UINT16_MAX);
+   assert(sctx->end_prime <= 1<<16);
 
    sctx->block_size = pctx->threads[0].current_block.block_size;
 
