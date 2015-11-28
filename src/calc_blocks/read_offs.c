@@ -13,35 +13,50 @@ struct prime_and_offset
    uint16_t offset;
 }__attribute__((__packed__));
 
-struct read_offs_ctx
+
+struct read_offs_thread_ctx
 {
-   uint32_t start_prime;
-   uint32_t end_prime;
    struct prime_and_offset *primelist;
    uint16_t *offsets;
    uint32_t primelist_count;
    uint32_t calculated_index;
    uint32_t top10_index[10];
    uint32_t top10_count[10];
+   int64_t  last_blockno;
+};
+
+struct read_offs_ctx
+{
+   uint32_t start_prime;
+   uint32_t end_prime;
+   int nthreads;
+   struct read_offs_thread_ctx *thread_data;
 };
 
 
 int
 read_offs_init(struct prime_ctx *pctx, uint32_t start_prime, uint32_t end_prime, void **ctx)
 {
+   int i;
    struct read_offs_ctx *sctx = calloc(1, sizeof (struct read_offs_ctx));
    *ctx = sctx;
 
    sctx->start_prime = start_prime;
    sctx->end_prime = MIN(pctx->run_info.max_sieve_prime, end_prime);
 
+   sctx->nthreads = pctx->num_threads ?: 1;
+
    assert(sctx->end_prime <= pctx->current_block->block_size);
    assert(sctx->end_prime <= UINT16_MAX);
 
-   sctx->primelist = malloc(sizeof(struct prime_and_offset) * (sctx->end_prime - start_prime) / 4 + 1000);
-   sctx->offsets = malloc(sizeof(uint16_t ) * 8 * (sctx->end_prime - start_prime) / 4 + 1000);
-   sctx->primelist_count = 0;
-   sctx->calculated_index = 0;
+   sctx->thread_data = calloc(sizeof(struct read_offs_thread_ctx), sctx->nthreads);
+
+   for (i = 0; i < sctx->nthreads; i++) {
+      sctx->thread_data[i].primelist = malloc(sizeof(struct prime_and_offset) * (sctx->end_prime - start_prime) / 4 + 1000);
+      sctx->thread_data[i].offsets = malloc(sizeof(uint16_t ) * 8 * (sctx->end_prime - start_prime) / 4 + 1000);
+      sctx->thread_data[i].last_blockno = INT64_MAX;
+      sctx->thread_data[i].calculated_index = 0;
+   }
    return 0;
 }
 
@@ -49,9 +64,13 @@ read_offs_init(struct prime_ctx *pctx, uint32_t start_prime, uint32_t end_prime,
 int
 read_offs_free(void *ctx)
 {
+   int i;
    struct read_offs_ctx *sctx = ctx;
-   FREE(sctx->primelist);
-   FREE(sctx->offsets);
+   for (i = 0; i < sctx->nthreads; i++) {
+      FREE(sctx->thread_data[i].primelist);
+      FREE(sctx->thread_data[i].offsets);
+   }
+   FREE(sctx->thread_data);
    FREE(ctx);
    return 0;
 }
@@ -61,15 +80,20 @@ int
 read_offs_add_sieving_primes(uint32_t *primelist, uint32_t *ind, uint32_t size, void *ctx)
 {
    struct read_offs_ctx *sctx = ctx;
+   struct read_offs_thread_ctx *tdata;
+   int i;
    for (; *ind < size; (*ind)++) {
       if (primelist[*ind] < sctx->start_prime)
          continue;
       if (primelist[*ind] > sctx->end_prime)
          return 0;
 
-      sctx->primelist[sctx->primelist_count].prime = primelist[*ind];
-      sctx->primelist[sctx->primelist_count].offset = primelist[*ind];
-      sctx->primelist_count++;
+      for (i = 0; i < sctx->nthreads; i++) {
+         tdata = &sctx->thread_data[i];
+         tdata->primelist[tdata->primelist_count].prime = primelist[*ind];
+         tdata->primelist[tdata->primelist_count].offset = primelist[*ind];
+         tdata->primelist_count++;
+      }
    }
    return 0;
 }
@@ -78,202 +102,183 @@ read_offs_add_sieving_primes(uint32_t *primelist, uint32_t *ind, uint32_t size, 
 int
 read_offs_skip_to(struct prime_thread_ctx *pctx, uint64_t target_num, void *ctx)
 {
-   (void)pctx;
    (void)target_num;
 
    struct read_offs_ctx *sctx = ctx;
 
    /* Recalculate all of the offsets depending on the new block */
-   sctx->calculated_index = 0;
+   sctx->thread_data[pctx->thread_index].calculated_index = 0;
+   sctx->thread_data[pctx->thread_index].last_blockno = INT64_MAX;
+   bzero(sctx->thread_data[pctx->thread_index].top10_count, sizeof sctx->thread_data[pctx->thread_index].top10_count);
+
    return 0;
 }
 
 
 /*
  * The first time we don't know how many times to mark off the prime in the
- * block (ie don't really know 'n'). Anyway, keeping this separate to the
- * calc_block function allows the "calc_block" function to make more
- * assumptions and optimise better.
+ * block (ie don't really know 'n').
  */
 static void
 compute_block_first_time(struct prime_current_block *pcb, uint32_t sieve_prime, uint16_t *offsets)
 {
-   char *bms[8];
-   int i;
-   const unsigned char *bits = a_x_b_bitmask[pp_to_bit(sieve_prime)];
-   const unsigned char *rbits = a_x_b_bits[pp_to_bit(sieve_prime)];
-   int done = 0;
+   char *bmp;
+   int   i;
+   const unsigned char bits[]  = {0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80};
 
-   for (i = 0; i < 8; i++)
-      bms[i] = pcb->block + offsets[i];
+   bmp = pcb->block + (uint64_t)sieve_prime * (sieve_prime / 30) - pcb->block_start_byte;
 
-   while ( ! done) {
-      for (i = 0; i < 8; i++) {
-         if (bms[i]  >= pcb->block + pcb->block_size)
-            done = 1;
-         else {
-            *bms[i] |= bits[i];
-            bms[i]  += sieve_prime;
-         }
-      }
-   }
-   /* For simplicity, write the offsets the first time, with an 'a' offset of 0,
-    * then apply the offset for all the other times.
-    */
-   for (i = 0; i < 8; i++)
-      offsets[rbits[i]] = bms[i] - (pcb->block + pcb->block_size);
+   for (; bmp < pcb_end(pcb); bmp += sieve_prime)
+      for (i = 0; i < 8; i++)
+         *(bmp + offsets[i]) |= bits[i];
 }
 
 
 static void
-check_new_sieve_primes(struct read_offs_ctx *sctx, struct prime_current_block *pcb)
+check_new_sieve_primes(struct read_offs_thread_ctx *tdata, struct prime_current_block *pcb, int skip, int mode)
 {
-   int bit;
+   struct prime_and_offset *po;
    uint32_t sieve_prime;
-   uint64_t multiplier_base;
-   uint64_t multiplier_byte;
+   uint16_t *offsets;
 
-   uint64_t block_start_byte = num_to_bytes(pcb->block_start_num);
    int i;
 
-   for ( ; sctx->calculated_index < sctx->primelist_count; sctx->calculated_index++) {
+   for ( ; tdata->calculated_index < tdata->primelist_count; tdata->calculated_index++) {
 
-      sieve_prime = sctx->primelist[sctx->calculated_index].prime;
-      sctx->primelist[sctx->primelist_count].offset = sieve_prime;
+      po = &tdata->primelist[tdata->calculated_index];
+      sieve_prime = po->prime;
+      offsets = &tdata->offsets[tdata->calculated_index * 8];
 
-      if (sieve_prime > pcb->sqrt_end_num)
-         return;
+      for (i = 0; i < 8; i++)
+         offsets[num_to_bit(ind_to_mod[i] * sieve_prime)] = num_to_bytes(ind_to_mod[i] * sieve_prime);
+
+      /*
+       * Mode 0 allows skipped primes to be added or reset primes to be reset and
+       * still use the main mechanism (without using compute_block_first_time()
+       */
+      if (mode == 0) {
+         if (sieve_prime * sieve_prime >= pcb->block_start_num)
+            return;
+
+         po->offset = sieve_prime - (pcb->block_start_byte - skip * pcb->block_size) % sieve_prime;
+      }
+      else {
+         if (sieve_prime > pcb->sqrt_end_num)
+            return;
+
+         compute_block_first_time(pcb, sieve_prime, &tdata->offsets[tdata->calculated_index * 8]);
+
+         po->offset = sieve_prime - pcb->block_start_byte % sieve_prime;
+      }
 
       for (i = 10; i > 0; i--)
          if (sieve_prime <= pcb->block_size / i)
-            sctx->top10_index[i-1] = sctx->calculated_index + 1;
+            tdata->top10_index[i-1] = tdata->calculated_index + 1;
 
-      sctx->top10_count[9] = sctx->top10_index[9];
+      tdata->top10_count[9] = tdata->top10_index[9];
       for (i = 8; i >= 0; i--)
-         if (sctx->top10_index[i] > 0)
-            sctx->top10_count[i] = sctx->top10_index[i] - sctx->top10_index[i+1];
+         if (tdata->top10_index[i] > 0)
+            tdata->top10_count[i] = tdata->top10_index[i] - tdata->top10_index[i+1];
 
-      multiplier_base = bytes_to_num(num_to_bytes(MAX(pcb->block_start_num / sieve_prime, sieve_prime)));
-
-      for (bit = 0; bit < 8; bit++) {
-
-         multiplier_byte = num_to_bytes((multiplier_base + ind_to_mod[bit]) * sieve_prime);
-
-         while (multiplier_byte < block_start_byte)
-            multiplier_byte += sieve_prime;
-
-         while (multiplier_byte - block_start_byte >= UINT16_MAX)
-            multiplier_byte -= sieve_prime;
-
-         sctx->offsets[8*sctx->calculated_index + bit] = multiplier_byte - block_start_byte;
-      }
-
-      compute_block_first_time(pcb, sctx->primelist[sctx->calculated_index].prime, &sctx->offsets[sctx->calculated_index*8]);
    }
+}
+
+
+static void
+compute_get_set_offsets(struct prime_current_block *pcb, struct prime_and_offset *po, uint16_t *offsets, int *offs, int skip, int n)
+{
+   int32_t  sieve_prime = po->prime;
+   int32_t  offset      = po->offset;
+   int      i;
+
+   while (skip--) {
+      offset -= (pcb->block_size - n * sieve_prime);
+      offset += (offset>>31) & sieve_prime;
+   }
+
+   po->offset = offset;
+   offset -= sieve_prime;
+
+   for (i = 0; i < 8; i++)
+      offs[i] = (offset + offsets[i]) + ((int32_t)(offset + offsets[i])>>31 & sieve_prime);
 }
 
 
 /* the idea is that the inline remove the switch */
 static inline void __attribute__((always_inline))
-compute_block_n(struct prime_current_block *pcb, struct prime_and_offset *po, uint16_t *offsets, int n)
+compute_block_n(struct prime_current_block *pcb, struct prime_and_offset *po, uint16_t *offsets, int skip, int n)
 {
-   char *bms[8];
-   int i;
    const unsigned char bits[] = {0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80};
-   uint32_t sieve_prime = po->prime;
-   int32_t offset = po->offset - sieve_prime;
-#if 0
-   char *end = pcb->block + pcb->block_size;
-#endif
+   char     *bmp;
+   uint32_t  sieve_prime = po->prime;
+   int       offs[8];
+   int       i;
 
-   for (i = 0; i < 8; i++) {
-      bms[i] = (char *)pcb->block + (offsets[i] + offset) + ((int32_t)(offsets[i] + offset)>>31 & sieve_prime);
-      *bms[i] |= bits[i];
-   }
+   compute_get_set_offsets(pcb, po, offsets, offs, skip, n - 1);
+
+   bmp = pcb->block;
 
    switch (n) {
       case 10:
          for (i = 0; i < 8; i++)
-            *(bms[i] += sieve_prime) |= bits[i];
+            *(bmp + offs[i]) |= bits[i];
+         bmp += sieve_prime;
       case 9:
          for (i = 0; i < 8; i++)
-            *(bms[i] += sieve_prime) |= bits[i];
+            *(bmp + offs[i]) |= bits[i];
+         bmp += sieve_prime;
       case 8:
          for (i = 0; i < 8; i++)
-            *(bms[i] += sieve_prime) |= bits[i];
+            *(bmp + offs[i]) |= bits[i];
+         bmp += sieve_prime;
       case 7:
          for (i = 0; i < 8; i++)
-            *(bms[i] += sieve_prime) |= bits[i];
+            *(bmp + offs[i]) |= bits[i];
+         bmp += sieve_prime;
       case 6:
          for (i = 0; i < 8; i++)
-            *(bms[i] += sieve_prime) |= bits[i];
+            *(bmp + offs[i]) |= bits[i];
+         bmp += sieve_prime;
       case 5:
          for (i = 0; i < 8; i++)
-            *(bms[i] += sieve_prime) |= bits[i];
+            *(bmp + offs[i]) |= bits[i];
+         bmp += sieve_prime;
       case 4:
          for (i = 0; i < 8; i++)
-            *(bms[i] += sieve_prime) |= bits[i];
+            *(bmp + offs[i]) |= bits[i];
+         bmp += sieve_prime;
       case 3:
          for (i = 0; i < 8; i++)
-            *(bms[i] += sieve_prime) |= bits[i];
-
-         /* This will overrun the buffer and cause more cache misses (when viewed with cachegrind)
-          * HOWEVER, it seems faster than any check that I can come up with to conditionally set
-          * the last bit.
-          */
-#if 1
+            *(bmp + offs[i]) |= bits[i];
+         bmp += sieve_prime;
       case 2:
          for (i = 0; i < 8; i++)
-            *(bms[i] += sieve_prime) |= bits[i];
-#endif
+            *(bmp + offs[i]) |= bits[i];
+         bmp += sieve_prime;
+
+         for (i = 0; i < 8; i++)
+            *(bmp + offs[i]) |= bits[i];
    }
-
-#if 0
-   for (i = 0; i < 8; i++)
-      *(bms[i] + (((bms[i] - end)>>31) & sieve_prime)) |= bits[i];
-#endif
-   offset += n*sieve_prime - pcb->block_size;
-   offset += (offset>>31) & sieve_prime;
-
-   po->offset = offset;
 }
 
 
 static void
-compute_block_low(struct prime_current_block *pcb, struct prime_and_offset *po, uint16_t *offsets)
+compute_block_low(struct prime_current_block *pcb, struct prime_and_offset *po, uint16_t *offsets, int skip)
 {
-   char *bms[8];
-   int i;
    const unsigned char bits[] = {0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80};
-   int32_t offset;
-   int32_t sieve_prime = po->prime;
-   int n;
+   char    *bmp;
+   int32_t  sieve_prime = po->prime;
+   int      offs[8];
+   int      n;
+   int      i;
 
-   offset = po->offset - sieve_prime;
+   n = pcb->block_size / sieve_prime + 1;
 
-   /*
-    * po->offset is relative to the start of the block. It is positive but
-    * smaller than sieve_prime, meaning offset = po->offset - sieve_prime is
-    * not positive.
-    *
-    * If (offset + offsets[i]) is still negative then sieve_prime is added
-    * which will make it positive. The idea with the masking was to avoid
-    * branching (and the >>31 produces the mask for -ve numbers).
-    */
-   for (i = 0; i < 8; i++) {
-      bms[i] = (char *)pcb->block + (offsets[i] + offset) + ((int32_t)(offsets[i] + offset)>>31 & sieve_prime);
-      *bms[i] |= bits[i];
-   }
+   compute_get_set_offsets(pcb, po, offsets, offs, skip, n - 1);
 
-   n = pcb->block_size / sieve_prime;
-   offset += sieve_prime - (pcb->block_size % sieve_prime);
-   offset += (offset>>31) & sieve_prime;
-
-   while (n--)
+   for (bmp = pcb->block; n--; bmp += sieve_prime)
       for (i = 0; i < 8; i++)
-         *(bms[i] += sieve_prime) |= bits[i];
-
-   po->offset = offset;
+         *(bmp + offs[i]) |= bits[i];
 }
 
 
@@ -281,69 +286,80 @@ compute_block_low(struct prime_current_block *pcb, struct prime_and_offset *po, 
 int
 read_offs_calc_primes(struct prime_thread_ctx *ptx, void *ctx)
 {
-   struct read_offs_ctx *sctx = ctx;
-   /* Mark off multiples of 'a' in the block */
-   uint32_t i;
+   struct read_offs_ctx        *sctx = ctx;
+   struct read_offs_thread_ctx *tdata = &sctx->thread_data[ptx->thread_index];
+   struct prime_and_offset     *po;
+   int64_t  skip = ptx->current_block.block_num - tdata->last_blockno;
+   int       i;
    uint16_t *offs;
-   struct prime_and_offset *po;
 
-   if (sctx->primelist_count == 0)
+   if (tdata->primelist_count == 0)
       return 0;
 
-   if (sctx->primelist[0].prime == 7)
+   if (tdata->primelist[0].prime == 7)
       memset(ptx->current_block.block, 0, ptx->current_block.block_size);
+
+   if (skip < 0 || skip > 8) {
+      tdata->calculated_index = 0;
+      bzero(tdata->top10_count, sizeof tdata->top10_count);
+      skip = 0;
+   }
+
+   tdata->last_blockno = ptx->current_block.block_num;
 
    i = 0;
 
-   offs = &sctx->offsets[0] - 8;
-   po = sctx->primelist;
+   offs = &tdata->offsets[0] - 8;
+   po = tdata->primelist;
+
+   check_new_sieve_primes(tdata, &ptx->current_block, skip, 0);
 
    /*
     * These didn't like being putting in a loop, presumably because of all of
     * the inlining, so I unrolled them manually
     */
 
-   i = sctx->top10_count[9];
+   i = tdata->top10_count[9];
    while (i--)
-      compute_block_low(&ptx->current_block, po++, (offs += 8));
+      compute_block_low(&ptx->current_block, po++, (offs += 8), skip);
 
-   i = sctx->top10_count[8];
+   i = tdata->top10_count[8];
    while (i--)
-      compute_block_n(&ptx->current_block, po++, (offs += 8), 10);
+      compute_block_n(&ptx->current_block, po++, (offs += 8), skip, 10);
 
-   i = sctx->top10_count[7];
+   i = tdata->top10_count[7];
    while (i--)
-      compute_block_n(&ptx->current_block, po++, (offs += 8), 9);
+      compute_block_n(&ptx->current_block, po++, (offs += 8), skip, 9);
 
-   i = sctx->top10_count[6];
+   i = tdata->top10_count[6];
    while (i--)
-      compute_block_n(&ptx->current_block, po++, (offs += 8), 8);
+      compute_block_n(&ptx->current_block, po++, (offs += 8), skip, 8);
 
-   i = sctx->top10_count[5];
+   i = tdata->top10_count[5];
    while (i--)
-      compute_block_n(&ptx->current_block, po++, (offs += 8), 7);
+      compute_block_n(&ptx->current_block, po++, (offs += 8), skip, 7);
 
-   i = sctx->top10_count[4];
+   i = tdata->top10_count[4];
    while (i--)
-      compute_block_n(&ptx->current_block, po++, (offs += 8), 6);
+      compute_block_n(&ptx->current_block, po++, (offs += 8), skip, 6);
 
-   i = sctx->top10_count[3];
+   i = tdata->top10_count[3];
    while (i--)
-      compute_block_n(&ptx->current_block, po++, (offs += 8), 5);
+      compute_block_n(&ptx->current_block, po++, (offs += 8), skip, 5);
 
-   i = sctx->top10_count[2];
+   i = tdata->top10_count[2];
    while (i--)
-      compute_block_n(&ptx->current_block, po++, (offs += 8), 4);
+      compute_block_n(&ptx->current_block, po++, (offs += 8), skip, 4);
 
-   i = sctx->top10_count[1];
+   i = tdata->top10_count[1];
    while(i--)
-      compute_block_n(&ptx->current_block, po++, (offs += 8), 3);
+      compute_block_n(&ptx->current_block, po++, (offs += 8), skip, 3);
 
-   i = sctx->top10_count[0];
+   i = tdata->top10_count[0];
    while(i--)
-      compute_block_n(&ptx->current_block, po++, (offs += 8), 2);
+      compute_block_n(&ptx->current_block, po++, (offs += 8), skip, 2);
 
-   check_new_sieve_primes(sctx, &ptx->current_block);
+   check_new_sieve_primes(tdata, &ptx->current_block, skip, 1);
 
    return 0;
 }

@@ -36,6 +36,29 @@ bytes_to_num(uint64_t bytes)
 }
 
 
+char *
+pcb_end(struct prime_current_block *pcb)
+{
+   return pcb->block + pcb->block_size;
+}
+
+
+int
+pcb_inrange(struct prime_current_block *pcb, char *p)
+{
+   return p >= pcb->block && p < pcb_end(pcb);
+}
+
+
+char *
+pcb_initial_offset(struct prime_current_block *pcb, uint32_t prime)
+{
+   return pcb->block + ((uint64_t)prime * prime > pcb->block_start_num
+                        ? ((uint64_t)prime * num_to_bytes(prime) - pcb->block_start_byte)
+                        : -(pcb->block_start_byte % prime));
+}
+
+
 uint64_t
 get_next_prime(struct prime_current_block *pcb, uint32_t *byte, uint32_t *bit)
 {

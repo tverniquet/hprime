@@ -42,6 +42,44 @@ uint64_t num_to_bit(uint64_t num);
 uint64_t bytes_to_num(uint64_t bytes);
 
 
+/**
+ * The byte just past the end of the block
+ */
+char * pcb_end(struct prime_current_block *pcb);
+
+
+/*
+ * Checks if the offset is within the current block
+ */
+int pcb_inrange(struct prime_current_block *pcb, char *p);
+
+
+/*
+ * This calculation was done in many places and is a little messy.
+ *
+ * Basically all that is needed is -(block_start_byte % prime);
+ *
+ *            block_start_byte
+ *            |-------
+ * .   .   .xx
+ *
+ *
+ *  .  - dots are multiples of a
+ *  xx - block_start_byte % prime (ie the remainder)
+ *
+ * This returns a byte position that is aligned to 'a'. The 8 multiples within
+ * the 'a' byte repeat pattern need to be checked to see if they are inside the
+ * block. That is it is the initial offset for the block for that prime (if
+ * using this technique)
+ *
+ * The only real complexity is that it is desirable to skip until a * a, so
+ * this choice needs to be made (otherwise for the first block primes mark
+ * themselves as multiples and not prime)
+ *
+ */
+char * pcb_initial_offset(struct prime_current_block *pcb, uint32_t prime);
+
+
 /*
  * Return the first prime from the given byte/bit offset in the current
  * block.
