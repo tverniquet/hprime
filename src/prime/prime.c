@@ -452,7 +452,7 @@ get_next_thread_id(struct prime_ctx *ctx)
    uint32_t i;
    for (;;) {
       for (i = 0; i < ctx->num_threads; i++)
-         if (ctx->threads[i].current_block.block_num == (int)ctx->process_block_num)
+         if (ctx->threads[i].current_block.block_num == ctx->process_block_num)
             return i;
       sched_yield();
    }
@@ -515,7 +515,7 @@ calc_next_block_th (struct prime_ctx *ctx)
        */
       for (i = 0; i < ctx->num_threads; i++) {
          ctx->threads[i].run_num = 0;
-         ctx->threads[i].current_block.block_num = INT32_MAX;
+         ctx->threads[i].current_block.block_num = INT64_MAX;
          pthread_create(&ctx->threads[i].hdl, NULL, thread_calc_block, &ctx->threads[i]);
       }
    }

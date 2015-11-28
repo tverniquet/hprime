@@ -21,7 +21,7 @@ struct prime_current_block
    uint64_t  sqrt_end_num;
 
    uint64_t  block_start_byte;
-   int       block_num;
+   uint64_t  block_num;
 };
 
 

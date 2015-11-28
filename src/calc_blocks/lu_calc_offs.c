@@ -29,7 +29,7 @@ struct prime_list
    uint32_t ind_a_byte;
    uint32_t count;
    uint32_t index;
-   int      last_blockno;
+   int64_t  last_blockno;
 };
 
 
@@ -126,7 +126,7 @@ lu_calc_offs_skip_to(struct prime_thread_ctx *__attribute__((unused))pctx, uint6
    for (i = 0; i < 8; i++) {
       sctx->plist[pctx->thread_index][i].index = 0;
       sctx->plist[pctx->thread_index][i].ind_a_byte = sctx->start_prime / 30;
-      sctx->plist[pctx->thread_index][i].last_blockno = INT32_MAX;
+      sctx->plist[pctx->thread_index][i].last_blockno = INT64_MAX;
    }
    return 0;
 }
@@ -267,7 +267,7 @@ int
 lu_calc_offs_calc_primes(struct prime_thread_ctx *ptx, void *ctx)
 {
    struct lu_calc_offs_ctx *sctx = ctx;
-   int skip = ptx->current_block.block_num - sctx->plist[ptx->thread_index][0].last_blockno;
+   int64_t skip = ptx->current_block.block_num - sctx->plist[ptx->thread_index][0].last_blockno;
    int i;
 
    sctx->plist[ptx->thread_index][0].last_blockno = ptx->current_block.block_num;
