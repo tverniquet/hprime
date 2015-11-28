@@ -7,10 +7,10 @@
 
 struct simple_ctx
 {
-   uint32_t start_prime;
-   uint32_t end_prime;
+   uint32_t  start_prime;
+   uint32_t  end_prime;
    uint32_t *primelist;
-   uint32_t primelist_count;
+   uint32_t  primelist_count;
 };
 
 
@@ -67,28 +67,47 @@ simple_skip_to(struct prime_thread_ctx *pctx, uint64_t target_num, void *ctx)
 }
 
 
+/*
+ * This does not overrun the buffer so should be safe for larger primes.
+ * However, it will not be efficient for large primes due to all of the checking.
+ *
+ * No testing has been done for really large numbers which may affect the
+ * pointer arithmetic.
+ *
+ * No state is stored which means it is inherently safe for threaded
+ * calculations.
+ */
 static void
 mark_off_prime(struct prime_current_block *pcb, uint32_t sieve_prime)
 {
-   uint32_t sieve_prime_bit;
+   char     *bmp;
+   int       i;
+   int       offsets[8];
+   const unsigned char bits[]  = {0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80};
 
-   int j;
-   uint64_t multiplier;
-   int64_t  offset;
+   for (i = 0; i < 8; i++)
+      offsets[pp_to_bit(ind_to_mod[i] * sieve_prime)] = num_to_bytes(ind_to_mod[i] * sieve_prime);
 
-   sieve_prime_bit   = pp_to_bit(sieve_prime);
+   bmp = pcb_initial_offset(pcb, sieve_prime);
 
-   multiplier = FLOOR_TO(MAX(pcb->block_start_num / sieve_prime, sieve_prime), 30);
+   /*
+    * Only perform range checks for the first and last set of 8
+    */
 
-   for (j = 0; j < 8; j++) {
-      offset = (int64_t)((multiplier + ind_to_mod[j]) * sieve_prime)/30 - (int64_t)pcb->block_start_num/30;
-      while (offset < 0)
-         offset += sieve_prime;
-      while (offset < pcb->block_size) {
-         *(pcb->block + offset) |= a_x_b_bitmask[sieve_prime_bit][j];
-         offset += sieve_prime;
-      }
-   }
+   for (i = 0; i < 8; i++)
+      if (pcb_inrange(pcb, bmp + offsets[i]))
+         *(bmp + offsets[i]) |= bits[i];
+
+   if ((bmp += sieve_prime) > pcb_end(pcb))
+      return;
+
+   for ( ; bmp < pcb_end(pcb) - sieve_prime; bmp += sieve_prime)
+      for (i = 0; i < 8; i++)
+         *(bmp + offsets[i]) |= bits[i];
+
+   for (i = 0; i < 8; i++)
+      if (pcb_inrange(pcb, bmp + offsets[i]))
+         *(bmp + offsets[i]) |= bits[i];
 }
 
 
@@ -96,7 +115,6 @@ int
 simple_calc_primes(struct prime_thread_ctx *ptx, void *ctx)
 {
    struct simple_ctx *sctx = ctx;
-   /* Mark off multiples of 'a' in the block */
    uint32_t i;
 
    if (sctx->primelist_count == 0)

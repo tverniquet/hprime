@@ -17,8 +17,8 @@ struct prime_and_n
 struct simple_middle_thread_ctx
 {
    uint16_t *offsets;
-   int      calculated_index;
-   int      last_blockno;
+   int       calculated_index;
+   int64_t   last_blockno;
 };
 
 
@@ -44,7 +44,7 @@ simple_middle_init(struct prime_ctx *pctx, uint32_t start_prime, uint32_t end_pr
    sctx->start_prime = start_prime;
    sctx->end_prime = MIN(pctx->run_info.max_sieve_prime, end_prime);
 
-   assert(sctx->end_prime < UINT16_MAX);
+   assert(sctx->end_prime <= 1<<16);
 
    sctx->nthreads = pctx->num_threads ?: 1;
    sctx->block_size = pctx->current_block->block_size;
@@ -56,7 +56,7 @@ simple_middle_init(struct prime_ctx *pctx, uint32_t start_prime, uint32_t end_pr
    for (i = 0; i < sctx->nthreads; i++) {
       sctx->thread_data[i].offsets = malloc(sizeof(uint16_t ) * 8 * (sctx->end_prime - start_prime) / 4 + 1000);
       sctx->thread_data[i].calculated_index = 0;
-      sctx->thread_data[i].last_blockno = INT32_MAX;
+      sctx->thread_data[i].last_blockno = INT64_MAX;
    }
    return 0;
 }
@@ -109,48 +109,42 @@ simple_middle_skip_to(struct prime_thread_ctx *pctx, uint64_t target_num, void *
 }
 
 
-/*
- * The first time we don't know how many times to mark off the prime in the
- * block (ie don't really know 'n'). Anyway, keeping this separate to the
- * calc_block function allows the "calc_block" function to make more
- * assumptions and optimise better.
- */
 static void
-compute_block_first_time(struct prime_current_block *pcb, uint32_t sieve_prime, uint16_t *offsets)
+compute_block_first_time(struct prime_current_block *pcb, uint32_t sieve_prime, uint16_t *next_offsets)
 {
-   char *bms[8];
-   int i;
-   const unsigned char *bits = a_x_b_bitmask[pp_to_bit(sieve_prime)];
-   const unsigned char *rbits = a_x_b_bits[pp_to_bit(sieve_prime)];
-   int done = 0;
+   char     *bmp;
+   int       i;
+   int       offsets[8];
+   const unsigned char bits[]  = {0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80};
 
    for (i = 0; i < 8; i++)
-      bms[i] = pcb->block + offsets[i];
+      offsets[pp_to_bit(ind_to_mod[i] * sieve_prime)] = num_to_bytes(ind_to_mod[i] * sieve_prime);
 
-   while ( ! done) {
-      for (i = 0; i < 8; i++) {
-         if (bms[i]  >= pcb->block + pcb->block_size)
-            done = 1;
-         else {
-            *bms[i] |= bits[i];
-            bms[i]  += sieve_prime;
-         }
-      }
-   }
+   bmp = pcb_initial_offset(pcb, sieve_prime);
+
    for (i = 0; i < 8; i++)
-      offsets[rbits[i]] = bms[i] - (pcb->block + pcb->block_size);
+      if (pcb_inrange(pcb, bmp + offsets[i]))
+         *(bmp + offsets[i]) |= bits[i];
+
+   bmp += (bmp + sieve_prime < pcb_end(pcb)) ? sieve_prime : 0;
+
+   for ( ; bmp < pcb_end(pcb) - sieve_prime; bmp += sieve_prime)
+      for (i = 0; i < 8; i++)
+         *(bmp + offsets[i]) |= bits[i];
+
+   for (i = 0; i < 8; i++)
+      if (pcb_inrange(pcb, bmp + offsets[i]))
+         *(bmp + offsets[i]) |= bits[i];
+
+   for (i = 0; i < 8; i++)
+      next_offsets[i] = (bmp + offsets[i]) - pcb_end(pcb) + ((bmp + offsets[i] < pcb_end(pcb)) ? sieve_prime : 0);
 }
 
 
 static void
 check_new_sieve_primes(struct simple_middle_ctx *sctx, struct simple_middle_thread_ctx *tdata, struct prime_current_block *pcb)
 {
-   int bit;
    uint32_t sieve_prime;
-   uint64_t multiplier_base;
-   uint64_t multiplier_byte;
-
-   uint64_t block_start_byte = num_to_bytes(pcb->block_start_num);
 
    for ( ; tdata->calculated_index < sctx->primelist_count; tdata->calculated_index++) {
 
@@ -159,18 +153,6 @@ check_new_sieve_primes(struct simple_middle_ctx *sctx, struct simple_middle_thre
       if (sieve_prime > pcb->sqrt_end_num)
          return;
 
-      multiplier_base = bytes_to_num(num_to_bytes(MAX(pcb->block_start_num / sieve_prime, sieve_prime)));
-
-      for (bit = 0; bit < 8; bit++) {
-         multiplier_byte = num_to_bytes((multiplier_base + ind_to_mod[bit]) * sieve_prime);
-         while (multiplier_byte < block_start_byte)
-            multiplier_byte += sieve_prime;
-
-         while (multiplier_byte - block_start_byte >= UINT16_MAX)
-            multiplier_byte -= sieve_prime;
-
-         tdata->offsets[8*tdata->calculated_index + bit] = multiplier_byte - block_start_byte;
-      }
       compute_block_first_time(pcb, sctx->primelist[tdata->calculated_index].prime, &tdata->offsets[tdata->calculated_index*8]);
    }
 }
@@ -179,30 +161,19 @@ check_new_sieve_primes(struct simple_middle_ctx *sctx, struct simple_middle_thre
 static void
 compute_block(struct prime_current_block *pcb, uint32_t sieve_prime, uint16_t *offsets, uint32_t n)
 {
-   char *bms[8];
+   char *bmp;
    int i;
-   /*const unsigned char *bits = a_x_b_bitmask[pp_to_bit(sieve_prime)];*/
    const unsigned char bits[] = {0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80};
 
-   for (i = 0; i < 8; i++)
-      bms[i] = (char *)pcb->block + offsets[i];
-
-   while (n--) {
+   for (bmp = pcb->block; n--; bmp += sieve_prime)
       for (i = 0; i < 8; i++)
-         *bms[i]   |= bits[i];
-      for (i = 0; i < 8; i++)
-         bms[i]   += sieve_prime;
-   }
+         *(bmp + offsets[i]) |= bits[i];
 
    for (i = 0; i < 8; i++) {
-      if (bms[i]  < (char *)pcb->block + pcb->block_size) {
-         *bms[i] |= bits[i];
-         bms[i]  += sieve_prime;
-      }
+      if ((bmp + offsets[i]) < pcb_end(pcb))
+         *(bmp + offsets[i]) |= bits[i];
+      offsets[i] = (bmp + offsets[i]) - pcb_end(pcb) + ((bmp + offsets[i]) < pcb_end(pcb) ? sieve_prime : 0);
    }
-
-   for (i = 0; i < 8; i++)
-      offsets[i] = bms[i] - ((char *)pcb->block + pcb->block_size);
 }
 
 
@@ -213,7 +184,7 @@ simple_middle_calc_primes(struct prime_thread_ctx *ptx, void *ctx)
    struct simple_middle_thread_ctx *tdata = &sctx->thread_data[ptx->thread_index];
    /* Mark off multiples of 'a' in the block */
    int  i;
-   int  skip =  ptx->current_block.block_num - tdata->last_blockno;
+   int64_t  skip = ptx->current_block.block_num - tdata->last_blockno;
 
    tdata->last_blockno = ptx->current_block.block_num;
 

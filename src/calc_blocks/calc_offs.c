@@ -49,7 +49,7 @@ struct prime_list
 struct prime_offs {
    unsigned char *offs[8];
    int            offs_i[8];
-   int            last_blockno;
+   int64_t        last_blockno;
 };
 
 
@@ -89,7 +89,7 @@ calc_offs_init(struct prime_ctx *pctx, uint32_t start_prime, uint32_t end_prime,
       for (i = 0; i < 8; i++) {
          sctx->thread_offs[j].offs[i] = aligned_alloc(32, (sizeof(uint16_t) * 3500));
       }
-      sctx->thread_offs[j].last_blockno = INT32_MAX;
+      sctx->thread_offs[j].last_blockno = INT64_MAX;
    }
 
    return 0;
@@ -454,7 +454,7 @@ calc_offs_calc_primes(struct prime_thread_ctx *ptx, void *ctx)
 {
    struct calc_offs_ctx *sctx = ctx;
    struct prime_offs *po = &sctx->thread_offs[ptx->thread_index];
-   int skip = ptx->current_block.block_num - po->last_blockno;
+   int64_t skip = ptx->current_block.block_num - po->last_blockno;
 
    po->last_blockno = ptx->current_block.block_num;
 
