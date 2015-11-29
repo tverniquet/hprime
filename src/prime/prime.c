@@ -124,7 +124,8 @@ calc_block (struct prime_ctx *pctx) {
 
 
 static void
-get_next_block_single (struct prime_current_block *pcb) {
+get_next_block_single (struct prime_current_block *pcb)
+{
    pcb->block_start_num  += bytes_to_num(pcb->block_size);
    pcb->block_end_num    += bytes_to_num(pcb->block_size);
    pcb->sqrt_end_num      = sqrtl(pcb->block_end_num);
@@ -135,22 +136,26 @@ get_next_block_single (struct prime_current_block *pcb) {
 
 
 static void
-get_next_block (struct prime_thread_ctx *ptx, struct prime_current_block *pcb)
+set_block (struct prime_current_block *pcb, uint64_t block_num)
 {
-   struct prime_ctx *pm = ptx->main;
-
-   if (ptx->run_num--) {
-      get_next_block_single(pcb);
-      return;
-   }
-
-   ptx->run_num = pm->blocks_per_run - 1;
-
-   pcb->block_num        = __sync_fetch_and_add(&pm->block_num, pm->blocks_per_run);
+   pcb->block_num        = block_num;
    pcb->block_start_byte = pcb->block_num * pcb->block_size;
    pcb->block_start_num  = bytes_to_num(pcb->block_start_byte);
    pcb->block_end_num    = pcb->block_start_num + bytes_to_num(pcb->block_size);
    pcb->sqrt_end_num     = sqrtl(pcb->block_end_num);
+}
+
+
+static void
+get_next_block (struct prime_thread_ctx *ptx)
+{
+   if (ptx->run_num--) {
+      get_next_block_single(&ptx->current_block);
+   }
+   else {
+      ptx->run_num = ptx->main->blocks_per_run - 1;
+      set_block (&ptx->current_block, __sync_fetch_and_add(&ptx->main->block_num, ptx->main->blocks_per_run));
+   }
 }
 
 
@@ -216,35 +221,26 @@ add_sieve_primes_from_current_block(struct prime_thread_ctx *ptx)
 }
 
 
-/* Target num must be aligned to the block.. */
-static void
-skip_to_block(struct prime_ctx *ctx, uint64_t target_num)
-{
-   int i;
-   for (i = 0; i < ctx->plan_info.pp->num_entries; i++) {
-      ctx->plan_info.pp->entries[i].skip_to(&ctx->threads[0], target_num, ctx->plan_info.plan_entry_ctxs[i].data);
-   }
-
-   ctx->current_block->block_start_num = target_num;
-   ctx->current_block->block_end_num = target_num + bytes_to_num(ctx->current_block->block_size);
-   ctx->current_block->sqrt_end_num = sqrtl(ctx->current_block->block_end_num);
-   ctx->block_num = target_num / 30 / ctx->current_block->block_size;
-   ctx->current_block->block_num = ctx->block_num;
-   ctx->threads[0].run_num = 0;
-}
-
-
 /******************************************************************************
  * Thread Main functions
  *****************************************************************************/
 
+struct thread_data {
+   struct prime_thread_ctx *ptx;
+   int inorder;
+   int (*fn)(struct prime_thread_ctx *, void *);
+   void *th;
+};
+
+
 static void *
-thread_calc_block(void *ctx)
+thread_calc_block(void *data)
 {
-   struct prime_thread_ctx *ptx = ctx;
-   struct prime_ctx *pm = ptx->main;
+   struct thread_data         *tdata = data;
+   struct prime_thread_ctx    *ptx = tdata->ptx;
+   struct prime_ctx           *pm = ptx->main;
    struct prime_current_block *pcb = &ptx->current_block;
-   cpu_set_t cpuset;
+   cpu_set_t                   cpuset;
 
    /*
     * Set the affinity - this appears to be needed to stop
@@ -256,7 +252,7 @@ thread_calc_block(void *ctx)
 
    for (;;) {
 
-      get_next_block(ptx, pcb);
+      get_next_block(ptx);
 
       if (pcb->block_start_num > pm->run_info.end_num)
          break;
@@ -269,56 +265,25 @@ thread_calc_block(void *ctx)
       if (pcb->block_start_num < pm->run_info.start_num || pcb->block_end_num > pm->run_info.end_num)
          apply_start_end_sets(ptx);
 
-      sem_post(&ptx->can_start_result);
-      sem_wait(&ptx->can_start_result_next);
+      if (tdata->inorder) {
+         sem_post(&ptx->can_start_result);
+         sem_wait(&ptx->can_start_result_next);
+      }
+      else {
+         if (tdata->fn(ptx, tdata->th))
+            break;
+      }
    }
 
    return NULL;
 }
 
 
-struct thread_and_fn {
-   struct prime_thread_ctx *ptx;
-   int (*fn)(struct prime_thread_ctx *, void *);
-   void *th;
-};
-
-
 static void *
-thread_calc_block_v2(void *ctx)
+thread_calc_block_inorder(void *thunk)
 {
-   struct thread_and_fn *f = ctx;
-   struct prime_thread_ctx *ptx = f->ptx;
-   struct prime_ctx *pm = ptx->main;
-   struct prime_current_block *pcb = &ptx->current_block;
-   cpu_set_t cpuset;
-
-   /*
-    * Set the affinity - this appears to be needed to stop
-    * hiccups. Currently no checking is done if nthreads > ncpu
-    */
-   CPU_ZERO(&cpuset);
-   CPU_SET(ptx->thread_index, &cpuset);
-   sched_setaffinity(0, sizeof cpuset, &cpuset);
-
-   for (;;) {
-
-      get_next_block(ptx, pcb);
-
-      if (pcb->block_start_num > pm->run_info.end_num)
-         break;
-
-      calc_block_threaded(ptx);
-
-      if (pcb->block_end_num >= pm->run_info.end_num)
-         apply_start_end_sets(ptx);
-
-      if (f->fn(f->ptx, f->th))
-         break;
-   }
-
-   ptx->thread_index = 0;
-   return NULL;
+   struct thread_data tdata = { .ptx = thunk, .inorder = 1, .fn = NULL, .th = NULL} ;
+   return thread_calc_block(&tdata);
 }
 
 
@@ -326,122 +291,67 @@ thread_calc_block_v2(void *ctx)
  * The main "get_next_block" functions
  *****************************************************************************/
 
-
 /*
- * Calculates the next block in the requested prime range
+ * Calculate sieving primes first. (simplifies a lot of things)
  *
- * The desired usage is for the calling function to do:
+ * This also attempts to clear thread and plan data
  *
- *    while (get_next_block())
- *      do_something_with_block()
+ * It leaves ctx->block_num pointing to the start of the first block so that
+ * get_next_block() will return the first target block
  *
- *
- * There is a question of how and when to calculate the sieveing primes. One
- * mechanism would be to have the calling function do:
- *
- *   calculate_sieving_primes()
- *
- *    while (get_next_block())
- *      do_something_with_block()
- *
- * For whatever reason I decided that if the sieving prime blocks and the
- * output blocks overlap they shouldn't need to be calculated twice.
- *
- * However it ended up being a bit complicated to implement. I handled the
- * tricky-ness with a state machine with the state kept by the calling
- * function. There are essentially 3 phases:
- *  0 - init
- *  1 - calculate sieving primes
- *  2 - calculate requested prime range
- *
+ * TODO: use threads if threaded (potentially in-order threads)
  */
+static void
+calc_sieving_primes (struct prime_ctx *ctx)
+{
+   int i;
+
+   ctx->block_num = 0;
+   ctx->current_block = &ctx->threads[0].current_block;
+
+   add_sieve_primes(ctx, initial_primes, ARR_SIZEOF(initial_primes));
+   ctx->run_info.added_sieve_primes = initial_primes[ARR_SIZEOF(initial_primes) - 1];
+
+   get_next_block(&ctx->threads[0]);
+   calc_block_threaded(&ctx->threads[0]);
+   apply_zero_block_mod (&ctx->threads[0].current_block);
+   add_sieve_primes_from_current_block(&ctx->threads[0]);
+
+   while (ctx->threads[0].current_block.block_end_num < ctx->run_info.max_sieve_prime) {
+      get_next_block(&ctx->threads[0]);
+      calc_block_threaded(&ctx->threads[0]);
+      add_sieve_primes_from_current_block(&ctx->threads[0]);
+   }
+
+   ctx->block_num = ctx->run_info.start_num / 30 / ctx->threads[0].current_block.block_size;
+   ctx->process_block_num = ctx->block_num;
+   for (i = 0; i < ctx->plan_info.pp->num_entries; i++)
+      ctx->plan_info.pp->entries[i].skip_to(&ctx->threads[0], ctx->block_num * ctx->threads[0].current_block.block_size * 30, ctx->plan_info.plan_entry_ctxs[i].data);
+
+   for (i = 0; i < (int)ctx->num_threads; i++)
+      ctx->threads[i].run_num = 0;
+}
+
+
 static int
 calc_next_block_single (struct prime_ctx *ctx)
 {
-   /* Add initial primes so there is enough to calculate the first block */
-   switch (ctx->run_state) {
-
-      /*
-       * Case 0 Add the initial primes
-       *
-       * This will be enough primes to calculate the first block, at which time any
-       * further primes will also be added
-       */
-      case 0 : {
-         add_sieve_primes(ctx, initial_primes, ARR_SIZEOF(initial_primes));
-         ctx->run_info.added_sieve_primes = initial_primes[ARR_SIZEOF(initial_primes) - 1];
-
-         /* Fallthrough */
-      }
-
-      /*
-       * Case 1 Calculate sieving primes
-       *
-       * Process one block at a time until all sieving primes have been added.
-       * If the block is in the range of the final primes, then this returns
-       * once the block is calculated.
-       */
-      case 1 : {
-
-         if (ctx->run_state == 1)
-            get_next_block_single(&ctx->threads[0].current_block);
-
-         ctx->run_state = 1;
-
-         /* Always start at the 0th block in order to calculate the sieving primes */
-         while (ctx->run_info.added_sieve_primes < ctx->run_info.max_sieve_prime) {
-
-            calc_block(ctx);
-            apply_zero_block_mod (&ctx->threads[0].current_block);
-
-            add_sieve_primes_from_current_block(&ctx->threads[0]);
-
-            if (ctx->current_block->block_start_num >= ctx->run_info.start_num) {
-               apply_zero_block_mod (&ctx->threads[0].current_block);
-               apply_start_end_sets(&ctx->threads[0]);
-               return 1;
-            }
-
-            get_next_block_single(&ctx->threads[0].current_block);
-         }
-
-         /*
-          * If the next block is to be counted, then continue. Else each plan entry
-          * will need to be made aware of the jump
-          */
-         if (ctx->current_block->block_start_num > ctx->run_info.end_num
-                ||
-             ctx->current_block->block_end_num < ctx->run_info.start_num) {
-            skip_to_block(ctx, ctx->run_info.adjusted_start_num);
-         }
-         /* Fallthrough */
-      }
-
-      /*
-       * Case 2 Calculate the next block in the requested range
-       *
-       * Process one block at a time until all sieving primes have been added.
-       * If the block is in the range of the final primes, then this returns
-       * once the block is calculated.
-       */
-      case 2 : {
-
-         if (ctx->run_state == 2)
-            get_next_block_single(&ctx->threads[0].current_block);
-
-         ctx->run_state = 2;
-
-         if (ctx->current_block->block_start_num >= ctx->run_info.end_num)
-            return 0;
-
-         calc_block(ctx);
-         apply_zero_block_mod (&ctx->threads[0].current_block);
-         apply_start_end_sets(&ctx->threads[0]);
-         return 1;
-      }
+   if (ctx->run_state == 0) {
+      calc_sieving_primes(ctx);
+      ctx->threads[0].run_num = 0;
+      set_block (&ctx->threads[0].current_block, ctx->block_num - 1);
+      ctx->run_state = 1;
    }
-   /* not reached */
-   return -1;
+
+   get_next_block_single(&ctx->threads[0].current_block);
+
+   if (ctx->current_block->block_start_num >= ctx->run_info.end_num)
+      return 0;
+
+   calc_block(ctx);
+   apply_zero_block_mod (&ctx->threads[0].current_block);
+   apply_start_end_sets(&ctx->threads[0]);
+   return 1;
 }
 
 
@@ -473,73 +383,34 @@ static int
 calc_next_block_th (struct prime_ctx *ctx)
 {
    uint32_t i;
-   /*
-    * Init first time
-    */
    if (ctx->run_state == 0) {
-
-      ctx->blocks_per_run = 1;
-      ctx->process_block_num = 0;
-
-      ctx->blocks_per_run = 1;
-
-      /*
-       * Calculate all sieveing primes first. (Just makes it easier..)
-       */
-      ctx->block_num = 0;
-      ctx->current_block = &ctx->threads[0].current_block;
-
-      add_sieve_primes(ctx, initial_primes, ARR_SIZEOF(initial_primes));
-      ctx->run_info.added_sieve_primes = initial_primes[ARR_SIZEOF(initial_primes) - 1];
-
-      do {
-         get_next_block(&ctx->threads[0], &ctx->threads[0].current_block);
-         calc_block_threaded(&ctx->threads[0]);
-         apply_zero_block_mod (&ctx->threads[0].current_block);
-         add_sieve_primes_from_current_block(&ctx->threads[0]);
-      }
-      while (ctx->threads[0].current_block.block_end_num < ctx->run_info.max_sieve_prime);
-
       ctx->run_state = 1;
 
-      /*
-       * I found I needed to reset all of the entries because of calculating the sieving primes above
-       */
-      ctx->block_num = ctx->run_info.start_num / 30 / ctx->threads[0].current_block.block_size;
-      ctx->process_block_num = ctx->block_num;
-      for (i = 0; i < (uint32_t)ctx->plan_info.pp->num_entries; i++)
-         ctx->plan_info.pp->entries[i].skip_to(&ctx->threads[0], ctx->block_num * ctx->threads[0].current_block.block_size * 30, ctx->plan_info.plan_entry_ctxs[i].data);
+      ctx->blocks_per_run = 1;
 
-      /*
-       * Now start the threads
-       */
+      calc_sieving_primes(ctx);
+
       for (i = 0; i < ctx->num_threads; i++) {
          ctx->threads[i].run_num = 0;
          ctx->threads[i].current_block.block_num = INT64_MAX;
-         pthread_create(&ctx->threads[i].hdl, NULL, thread_calc_block, &ctx->threads[i]);
+         pthread_create(&ctx->threads[i].hdl, NULL, thread_calc_block_inorder, &ctx->threads[i]);
       }
    }
    else {
 
-      /*
-       * Clean up if finished
-       */
       if (ctx->current_block->block_end_num >= ctx->run_info.end_num) {
          for (i = 0; i < ctx->num_threads; i++)
             sem_post(&ctx->threads[i].can_start_result_next);
 
          for (i = 0; i < ctx->num_threads; i++)
             pthread_join(ctx->threads[i].hdl, NULL);
-         return 0;
+
+         return 0; /* DONE */
       }
-      /*
-       * This says we are done processing the block and the thread
-       * can move on,
-       */
+
       sem_post(&ctx->threads[ctx->thread_i].can_start_result_next);
       ctx->process_block_num++;
    }
-
 
    ctx->thread_i = get_next_thread_id(ctx);
    sem_wait(&ctx->threads[ctx->thread_i].can_start_result);
@@ -566,46 +437,27 @@ int
 calc_blocks (struct prime_ctx *ctx, int (*fn)(struct prime_thread_ctx *, void *), void *thunk)
 {
    uint32_t i;
-   struct thread_and_fn *trfn;
-
-   /*
-    * A bit dodgy - just making sure it run a little bit faster for both 10^9 and 10^10 */
-   ctx->blocks_per_run = ctx->run_info.end_num > 32*1024*32*1024 ? 64 : 1;
-
-   trfn = calloc(sizeof *trfn, ctx->num_threads);
-
-   ctx->current_block = &ctx->threads[0].current_block;
-
-   add_sieve_primes(ctx, initial_primes, ARR_SIZEOF(initial_primes));
-   ctx->run_info.added_sieve_primes = initial_primes[ARR_SIZEOF(initial_primes) - 1];
-
-   ctx->block_num = 0;
-   for (i = 0; i < ctx->num_threads; i++)
-      ctx->threads[i].run_num = 0;
+   struct thread_data *tdata = calloc(sizeof *tdata, ctx->num_threads);
 
    for (i = 0; i < ctx->num_threads; i++) {
-      trfn[i].fn = fn;
-      trfn[i].th = thunk;
-      trfn[i].ptx = &ctx->threads[i];
+      ctx->threads[i].run_num = 0;
+      tdata[i].inorder = 0;
+      tdata[i].fn = fn;
+      tdata[i].th = thunk;
+      tdata[i].ptx = &ctx->threads[i];
    }
-   do {
-      get_next_block(&ctx->threads[0], &ctx->threads[0].current_block);
-      calc_block_threaded(&ctx->threads[0]);
-      apply_zero_block_mod (&ctx->threads[0].current_block);
-      add_sieve_primes_from_current_block(&ctx->threads[0]);
-   } while (ctx->current_block->block_end_num < ctx->run_info.max_sieve_prime);
 
-   for (i = 1; i < ctx->num_threads; i++)
-      pthread_create(&ctx->threads[i].hdl, NULL, thread_calc_block_v2, &trfn[i]);
+   ctx->blocks_per_run = ctx->run_info.end_num > 32*1024*32*1024 ? 64 : 1;
 
-   fn(&ctx->threads[0], thunk);
-   thread_calc_block_v2(&trfn[0]);
+   calc_sieving_primes(ctx);
 
-   for (i = 1; i < ctx->num_threads; i++) {
+   for (i = 0; i < ctx->num_threads; i++)
+      pthread_create(&ctx->threads[i].hdl, NULL, thread_calc_block, &tdata[i]);
+
+   for (i = 0; i < ctx->num_threads; i++)
       pthread_join(ctx->threads[i].hdl, NULL);
-   }
 
-   free(trfn);
+   free(tdata);
 
    return 0;
 }
